@@ -17,6 +17,7 @@ from homeassistant.helpers.entity_platform import (
 from .src.taco_config_entry import TacoConfigEntry
 from .src.taco_device_info import create_device_info, create_entity_id
 from .src.taco_gatt_read_transform import (
+    MAX_NETWORK_PANELS,
     THERMOSTAT_INPUT_STATUS,
     ZONE_STATUS,
     ZONE_COUNT,
@@ -32,38 +33,64 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-def _value_fn(data: dict[str, any], key: str, index: int) -> bool | None:
-    """Returns the zone value at index, 1 based."""
+def _panel_zone_count(data: dict[str, any], panel: int) -> int:
+    """Return the zone count for a given panel index (0 = Master, 1..19 = Expansion)."""
+    counts = data.get(ZONE_COUNT)
+    if isinstance(counts, list):
+        return counts[panel] if panel < len(counts) else 0
+    if isinstance(counts, int):
+        return counts if panel == 0 else 0
+    return 6 if panel == 0 else 0
+
+
+def _value_fn(data: dict[str, any], key: str, panel: int, index: int) -> bool | None:
+    """Returns the zone value at panel (0-based) and zone index (1-based)."""
     value = data.get(key, None)
     if not value:
+        return None
+
+    if isinstance(value, list):
+        if panel >= len(value) or value[panel] is None:
+            return None
+        value = value[panel]
+    elif panel != 0:
         return None
 
     return getattr(value, f"zone{index}")
 
 
-def _make_zone_sensor(index: int) -> CallableDescription:
-    """Make a zone sensor, index is 1 based."""
+def _key_prefix(panel: int) -> str:
+    """Return key prefix: empty for Master (panel 0), EXP{panel}_ for expansion panels."""
+    return "" if panel == 0 else f"EXP{panel}_"
+
+
+def _make_zone_sensor(panel: int, index: int) -> CallableDescription:
+    """Make a zone sensor, panel is 0-based, index is 1-based."""
+    prefix = _key_prefix(panel)
 
     return CallableDescription(
         entity_description=BinarySensorEntityDescription(
-            key=f"ZONE_{index}",
+            key=f"{prefix}ZONE_{index}",
             device_class=BinarySensorDeviceClass.RUNNING,
         ),
-        exists_fn=lambda data: data.get(ZONE_COUNT, 6) >= index,
-        value_fn=lambda data: _value_fn(data, ZONE_STATUS, index),
+        exists_fn=lambda data, p=panel, idx=index: _panel_zone_count(data, p) >= idx,
+        value_fn=lambda data, p=panel, idx=index: _value_fn(data, ZONE_STATUS, p, idx),
     )
 
 
-def _make_thermostat_sensor(index: int) -> CallableDescription:
-    """Make a zone sensor, index is 1 based."""
+def _make_thermostat_sensor(panel: int, index: int) -> CallableDescription:
+    """Make a thermostat sensor, panel is 0-based, index is 1-based."""
+    prefix = _key_prefix(panel)
 
     return CallableDescription(
         entity_description=BinarySensorEntityDescription(
-            key=f"THERMOSTAT_{index}",
+            key=f"{prefix}THERMOSTAT_{index}",
             device_class=None,  # Deliberately none
         ),
-        exists_fn=lambda data: data.get(ZONE_COUNT, 6) >= index,
-        value_fn=lambda data: _value_fn(data, THERMOSTAT_INPUT_STATUS, index),
+        exists_fn=lambda data, p=panel, idx=index: _panel_zone_count(data, p) >= idx,
+        value_fn=lambda data, p=panel, idx=index: _value_fn(
+            data, THERMOSTAT_INPUT_STATUS, p, idx
+        ),
     )
 
 
@@ -85,26 +112,14 @@ def _make_aux_sensor(index: int) -> CallableDescription:
     )
 
 
-_SENSORS: tuple[CallableDescription, ...] = [
-    # Pumps
-    _make_zone_sensor(1),
-    _make_zone_sensor(2),
-    _make_zone_sensor(3),
-    _make_zone_sensor(4),
-    _make_zone_sensor(5),
-    _make_zone_sensor(6),
-    # Thermostats
-    _make_thermostat_sensor(1),
-    _make_thermostat_sensor(2),
-    _make_thermostat_sensor(3),
-    _make_thermostat_sensor(4),
-    _make_thermostat_sensor(5),
-    _make_thermostat_sensor(6),
-    # Aux
-    # Don't enable these, they don't work. See comment inside of const.py
-    # _make_aux_sensor(1),
-    # _make_aux_sensor(2),
-]
+_SENSORS: tuple[CallableDescription, ...] = tuple(
+    sensor
+    for panel in range(MAX_NETWORK_PANELS)
+    for sensor in (
+        *(_make_zone_sensor(panel, idx) for idx in range(1, 7)),
+        *(_make_thermostat_sensor(panel, idx) for idx in range(1, 7)),
+    )
+)
 
 
 async def async_setup_entry(

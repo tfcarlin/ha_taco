@@ -81,7 +81,12 @@ def _make_zone_switch(
         entity_description=SwitchEntityDescription(
             key=f"FORCE_ON_ZONE_{index}", device_class=SwitchDeviceClass.SWITCH
         ),
-        exists_fn=lambda data: data.get(ZONE_COUNT, 6) >= index,
+        exists_fn=lambda data: (
+            data.get(ZONE_COUNT)[0]
+            if isinstance(data.get(ZONE_COUNT), list)
+            else data.get(ZONE_COUNT, 6)
+        )
+        >= index,
         value_fn=lambda data: _value_fn(data, index, taco_runtime_data),
         write_fn=lambda activity, data: _write_fn(
             activity, data, index, taco_runtime_data
@@ -105,6 +110,10 @@ async def async_setup_entry(
         _LOGGER.info(
             "No password provided to Taco, so no switches or buttons are enabled."
         )
+        return
+
+    if not taco_runtime_data.supports_force_zone:
+        _LOGGER.info("This Taco model does not support zone override, so no switches are enabled.")
         return
 
     # Note, we aren't actually guaranteed to have any

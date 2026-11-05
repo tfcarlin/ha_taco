@@ -1,4 +1,4 @@
-"""Methods used inside of __init__.py for setting up the taco."""
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
@@ -22,8 +22,8 @@ from .ble_data_update_coordinator import BleDataUpdateCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
-async def _validate_ping(ble_coordinator: BleDataUpdateCoordinator):
-    """Reads then writes the mac address."""
+async def _validate_ping(ble_coordinator: BleDataUpdateCoordinator) -> dict:
+    """Reads then writes the mac address. Returns the data read."""
     try:
         results = await ble_coordinator.poll()
         network_device_index = results.get(NETWORK_DEVICE_INDEX)
@@ -32,13 +32,12 @@ async def _validate_ping(ble_coordinator: BleDataUpdateCoordinator):
                 "Could not get network device index, is the device online and connected?"
             )
 
-        # In theory we should be able to make this write request prior to sending the password
-        # Since it is just a ping. However, if a bug report comes in then we may need to remove the write.
         await ble_coordinator.write(
             [WriteRequest(PING_NETWORK_DEVICE_INDEX, extra=network_device_index)]
         )
     except Exception as err:
         raise ConfigEntryNotReady(err) from err
+    return results
 
 
 async def _validate_password(
@@ -47,6 +46,7 @@ async def _validate_password(
     """Checks the password is legal and actually correct for this particular device."""
 
     if not password or not password.value:
+        _LOGGER.warning("No password provided to Taco, some features may not work.")
         return
 
     if len(password.value) > 20:
@@ -60,11 +60,15 @@ async def _validate_password(
         raise ConfigEntryAuthFailed(err) from err
 
 
-async def send_initial_write_requests(runtime_data: TacoRuntimeData):
-    """Starts communication with the taco, validating passwords and connections."""
+async def send_initial_write_requests(runtime_data: TacoRuntimeData) -> dict:
+    """Starts communication with the taco, validating passwords and connections.
 
-    await _validate_ping(runtime_data.ble_coordinator)
+    Returns the data read during the ping (includes the product info).
+    """
+
+    results = await _validate_ping(runtime_data.ble_coordinator)
     await _validate_password(runtime_data.password, runtime_data.ble_coordinator)
+    return results
 
 
 def _create_write_requests(
@@ -100,52 +104,27 @@ def _create_write_requests(
     ]
 
 
-async def _send_write_requests(
-    actions: list[WriteRequest], ble_coordinator: BleDataUpdateCoordinator
-) -> bool:
-    _LOGGER.info(
-        "Sending out write requests (%s): %s",
-        len(actions),
-        actions,
-    )
-    await ble_coordinator.write(actions)
+async def _loop(state: dict[str, any], runtime_data: TacoRuntimeData):
+    """A single loop for the writer."""
 
-
-_PREVIOUS_ACTIONS_KEY = "previous_actions"
-_PREVIOUS_WRITE_TIME_KEY = "previous_write_time"
-
-
-async def _loop(state: dict, runtime_data: TacoRuntimeData):
-    """The actual loop called every few seconds."""
-
-    # The Taco is pretty defensive and will timeout after
-    # 5 minutes. So we need to repeatedly send it the same commands
-    # over and over again to keep it awake and acting like we want.
-
-    success = False
-
-    keep_alive, actions = _create_write_requests(runtime_data)
-
-    if not actions:
+    ble_coordinator = runtime_data.ble_coordinator
+    if not ble_coordinator.is_connected():
         return
 
-    previous_actions = state.get(_PREVIOUS_ACTIONS_KEY, [])
-    if previous_actions != actions:
-        await _send_write_requests(actions, runtime_data.ble_coordinator)
-        success = True
+    keep_alive, write_requests = _create_write_requests(runtime_data)
 
-    if not keep_alive:
-        success = True
+    current_time = datetime.now()
+    last_keep_alive = state.get("last_keep_alive", datetime.min)
+    duration = current_time - last_keep_alive
 
-    # The Taco times out after 5 minutes, so set this to be just a bit before.
-    previous_datetime = state.get(_PREVIOUS_WRITE_TIME_KEY, datetime.now())
-    if datetime.now() - previous_datetime > timedelta(minutes=4):
-        await _send_write_requests(actions, runtime_data.ble_coordinator)
-        success = True
-
-    if success:
-        state[_PREVIOUS_ACTIONS_KEY] = actions
-        state[_PREVIOUS_WRITE_TIME_KEY] = datetime.now()
+    if keep_alive:
+        if duration >= timedelta(seconds=2):
+            await ble_coordinator.write(write_requests)
+            state["last_keep_alive"] = current_time
+    else:
+        if duration < timedelta(seconds=1):
+            await ble_coordinator.write(write_requests)
+            state["last_keep_alive"] = current_time
 
 
 async def setup_write_loop(hass: HomeAssistant, runtime_data: TacoRuntimeData):
@@ -155,10 +134,6 @@ async def setup_write_loop(hass: HomeAssistant, runtime_data: TacoRuntimeData):
     errors = []
     callback = None
 
-    # This write loop will send out an initial set of messages when the
-    # home assistant integration initially boots. So that makes the Taco
-    # match our assumptions and expectations with state.
-
     async def _stateless_loop(_time):
         try:
             await _loop(state, runtime_data)
@@ -166,7 +141,7 @@ async def setup_write_loop(hass: HomeAssistant, runtime_data: TacoRuntimeData):
         except Exception as err:
             errors.append(err)
             if len(errors) == 3:
-                callback()  # Stop polling
+                callback()
                 message = "Multiple failures in ha_taco write loop, this usually means an authentication issue. Try setting the password and then restart the integration."
                 async_create(
                     hass,
@@ -179,8 +154,6 @@ async def setup_write_loop(hass: HomeAssistant, runtime_data: TacoRuntimeData):
     callback = async_track_time_interval(
         hass,
         _stateless_loop,
-        # Don't change this, we need it to be relatively fast
-        # If you want to adjust things, adjust inside of _loop.
         timedelta(seconds=1),
     )
     return callback

@@ -23,6 +23,7 @@ class TacoRuntimeData:
 
     remove_listeners: Callable[[], None] = lambda: None
     force_zone_on: list[bool] = field(default_factory=lambda: [False] * 6)
+    supports_force_zone: bool = True
 
     def __post_init__(self, password: str | None):
         self.password = password

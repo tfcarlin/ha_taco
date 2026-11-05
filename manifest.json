@@ -1,19 +1,23 @@
 {
   "domain": "ha_taco",
   "name": "Taco Controller",
-  "codeowners": [ "@Kobaj" ],
+  "codeowners": [
+    "@Kobaj"
+  ],
   "config_flow": true,
-  "dependencies": [ "bluetooth_adapters" ],
-  "homekit": { },
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
+  "homekit": {},
   "iot_class": "local_polling",
-  "requirements": [ ],
+  "requirements": [],
   "single_config_entry": false,
-  "ssdp": [ ],
-  "version": "1.0.0",
-  "zeroconf": [ ],
+  "ssdp": [],
+  "version": "1.1.0",
+  "zeroconf": [],
   "integration_type": "device",
-  "documentation": "https://gitlab.com/kobaj/ha_taco",
-  "issue_tracker": "https://gitlab.com/kobaj/ha_taco/-/issues",
+  "documentation": "https://github.com/tfcarlin/ha_taco",
+  "issue_tracker": "https://github.com/tfcarlin/ha_taco/issues",
   "bluetooth": [
     {
       "_comment": "This is 0x0C53, Taco Inc",

@@ -103,15 +103,19 @@ def read_product_id_transform(bytez: bytearray) -> ReadResult:
     )
 
 
+MAX_NETWORK_PANELS = 20
+
 ZONE_COUNT = "network_zone_count"
 
 
 def read_network_zone_count_transform(bytez: bytearray) -> ReadResult:
-    """Converts a bytearray to an int."""
-    _assert_bytearray_len(bytez, 20)
+    """Converts a 20-byte array to panel zone counts [Master (byte 19), Exp1 (byte 18), ...]."""
+    _assert_bytearray_len(bytez, MAX_NETWORK_PANELS)
 
-    # Not sure why they needed 20 bytes for this...
-    return ReadResult(ZONE_COUNT, bytez[19])
+    return ReadResult(
+        ZONE_COUNT,
+        [bytez[MAX_NETWORK_PANELS - 1 - i] for i in range(MAX_NETWORK_PANELS)],
+    )
 
 
 THERMOSTAT_INPUT_STATUS = "thermostat_input_status"
@@ -130,23 +134,30 @@ class ZoneInfo:
     zone6: bool
 
 
+def _parse_zone_info(byte: int) -> ZoneInfo:
+    """Convert a single panel bitmask byte into a ZoneInfo."""
+    return ZoneInfo(
+        zone1=_is_byte_match(byte, BYTE_BY_ZONE[ZONE1]),
+        zone2=_is_byte_match(byte, BYTE_BY_ZONE[ZONE2]),
+        zone3=_is_byte_match(byte, BYTE_BY_ZONE[ZONE3]),
+        zone4=_is_byte_match(byte, BYTE_BY_ZONE[ZONE4]),
+        zone5=_is_byte_match(byte, BYTE_BY_ZONE[ZONE5]),
+        zone6=_is_byte_match(byte, BYTE_BY_ZONE[ZONE6]),
+    )
+
+
 def read_network_thermostat_input_status_transform(
     bytez: bytearray,
 ) -> ReadResult:
-    """Converts a bytearray to an array where each index is a zone, true means on."""
-    _assert_bytearray_len(bytez, 20)
-
-    byte = bytez[19]
-    zone1 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE1])
-    zone2 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE2])
-    zone3 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE3])
-    zone4 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE4])
-    zone5 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE5])
-    zone6 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE6])
+    """Converts a 20-byte array to per-panel ZoneInfo [Master (byte 19), Exp1 (byte 18), ...]."""
+    _assert_bytearray_len(bytez, MAX_NETWORK_PANELS)
 
     return ReadResult(
         THERMOSTAT_INPUT_STATUS,
-        ZoneInfo(zone1, zone2, zone3, zone4, zone5, zone6),
+        [
+            _parse_zone_info(bytez[MAX_NETWORK_PANELS - 1 - i])
+            for i in range(MAX_NETWORK_PANELS)
+        ],
     )
 
 
@@ -154,19 +165,16 @@ ZONE_STATUS = "zone_status"
 
 
 def read_network_zone_status_transform(bytez: bytearray) -> ReadResult:
-    """Converts a bytearray to an array where each index is a zone, true means on."""
+    """Converts a 20-byte array to per-panel ZoneInfo [Master (byte 19), Exp1 (byte 18), ...]."""
+    _assert_bytearray_len(bytez, MAX_NETWORK_PANELS)
 
-    _assert_bytearray_len(bytez, 20)
-
-    byte = bytez[19]
-    zone1 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE1])
-    zone2 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE2])
-    zone3 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE3])
-    zone4 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE4])
-    zone5 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE5])
-    zone6 = _is_byte_match(byte, BYTE_BY_ZONE[ZONE6])
-
-    return ReadResult(ZONE_STATUS, ZoneInfo(zone1, zone2, zone3, zone4, zone5, zone6))
+    return ReadResult(
+        ZONE_STATUS,
+        [
+            _parse_zone_info(bytez[MAX_NETWORK_PANELS - 1 - i])
+            for i in range(MAX_NETWORK_PANELS)
+        ],
+    )
 
 
 NETWORK_DIAGNOSTIC_ONBOARD_INPUTS = "network_diagnostic_onboard_inputs"

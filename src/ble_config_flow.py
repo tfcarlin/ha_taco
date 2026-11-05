@@ -59,6 +59,22 @@ class BleConfigFlow(config_entries.ConfigFlow):
         self._discovery_infos: list[BluetoothServiceInfoBleak] = []
         self._decrypter = decrypter
         self._additional_info = additional_info
+        # Target device. Set from a discovery, or from an existing config
+        # entry (reauth / reconfigure), since a connected device stops
+        # advertising and is then not in async_discovered_service_info.
+        self._address: str | None = None
+        self._title: str | None = None
+
+    def _use_discovery_info(self, discovery_info: BluetoothServiceInfoBleak) -> None:
+        """Target the device from a bluetooth discovery."""
+        self._discovery_info = discovery_info
+        self._address = discovery_info.address
+        self._title = self._decrypter.get_device_name(discovery_info)
+
+    def _use_config_entry(self, entry: config_entries.ConfigEntry) -> None:
+        """Target the device of an existing config entry."""
+        self._address = entry.data.get(BLE_CONF_DEVICE_ADDRESS) or entry.unique_id
+        self._title = entry.data.get(BLE_CONF_DEVICE_NAME) or entry.title
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
@@ -73,7 +89,7 @@ class BleConfigFlow(config_entries.ConfigFlow):
         if discovery_info.address in current_addresses:
             return self.async_abort(reason="already_configured")
 
-        self._discovery_info = discovery_info
+        self._use_discovery_info(discovery_info)
         return self.show_confirm()
 
     async def async_step_user(
@@ -127,18 +143,18 @@ class BleConfigFlow(config_entries.ConfigFlow):
         assert self._discovery_infos
 
         address = user_input[BLE_CONF_DEVICE_ADDRESS]
-        self._discovery_info = next(
-            di for di in self._discovery_infos if di.address == address
+        self._use_discovery_info(
+            next(di for di in self._discovery_infos if di.address == address)
         )
         return self.show_confirm()
 
     def show_confirm(self) -> ConfigFlowResult:
         """Show the configuration dialog."""
 
-        assert self._discovery_info
+        assert self._address
 
-        title = self._decrypter.get_device_name(self._discovery_info)
-        address = self._discovery_info.device.address
+        title = self._title
+        address = self._address
         placeholders = {"name": title}
         self.context["title_placeholders"] = placeholders
         return self.async_show_form(
@@ -180,9 +196,9 @@ class BleConfigFlow(config_entries.ConfigFlow):
             # I would expect us to abort here, but apparently this infinite loop is
             # not only recommended, but required. WTF home assistant...
             return self.show_confirm()
-        assert self._discovery_info
+        assert self._address
 
-        address = self._discovery_info.address
+        address = self._address
         await self.async_set_unique_id(address)
         if self.source == SOURCE_REAUTH:
             self._abort_if_unique_id_mismatch()
@@ -198,21 +214,14 @@ class BleConfigFlow(config_entries.ConfigFlow):
             )
         self._abort_if_unique_id_configured()
 
-        title = self._decrypter.get_device_name(self._discovery_info)
-        return self.async_create_entry(title=title, data=user_input)
+        return self.async_create_entry(title=self._title, data=user_input)
 
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
 
-        address = self._get_reauth_entry().runtime_data.address
-        self._discovery_info = next(
-            di
-            for di in async_discovered_service_info(self.hass, False)
-            if di.address == address
-        )
-
+        self._use_config_entry(self._get_reauth_entry())
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -231,11 +240,5 @@ class BleConfigFlow(config_entries.ConfigFlow):
     ) -> ConfigFlowResult:
         """Step that lets a user reconfigure their device."""
 
-        address = self._get_reconfigure_entry().runtime_data.address
-        self._discovery_info = next(
-            di
-            for di in async_discovered_service_info(self.hass, False)
-            if di.address == address
-        )
-
+        self._use_config_entry(self._get_reconfigure_entry())
         return await self.async_step_confirm()
