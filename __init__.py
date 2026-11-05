@@ -1,12 +1,18 @@
+"""Package for Home Assistant Taco Integration."""
+
 from __future__ import annotations
 
 import logging
 
-from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.components import bluetooth
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .src.taco_init import send_initial_write_requests, setup_write_loop
+from bleak_retry_connector import close_stale_connections_by_address
+
+from .src.taco_init import setup_write_loop, send_initial_write_requests
 from .src.ble_data_update_coordinator import BleDataUpdateCoordinator
 from .src.taco_config_entry import TacoConfigEntry, TacoRuntimeData
 from .src.taco_gatt_read_transform import TACO_PRODUCT_INFO
@@ -17,42 +23,50 @@ from .config_flow import CONF_TACO_DEVICE_PASSWORD
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [
-    Platform.BINARY_SENSOR,
-    Platform.BUTTON,
-    Platform.DATETIME,
-    Platform.NUMBER,
-    Platform.SENSOR,
-    Platform.SWITCH,
-    Platform.TIME,
-]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TacoConfigEntry) -> bool:
-    """Set up Taco from a config entry."""
-    _LOGGER.debug("Setting up Taco: %s", entry)
+    """Set up device from a config entry."""
+    _LOGGER.info("Setting up a Taco!: %s", entry)
+
+    hass.data.setdefault(DOMAIN, {})
 
     address = entry.data.get(BLE_CONF_DEVICE_ADDRESS)
-    password = entry.data.get(CONF_TACO_DEVICE_PASSWORD)
+    assert address
+    await close_stale_connections_by_address(address)
 
-    # Initialize the runtime data
-    entry.runtime_data = TacoRuntimeData(password)
-    entry.runtime_data.ble_coordinator = BleDataUpdateCoordinator(
-        hass, DOMAIN, taco_gatt, address
+    # Start bluetooth setup.
+    ble_device = bluetooth.async_ble_device_from_address(
+        hass, address.upper(), connectable=True
     )
+    if not ble_device:
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="device_not_found_error",
+            translation_placeholders={"address": address},
+        )
 
-    try:
-        # Initial BLE connect and read of index/subscribe characteristics
-        await entry.runtime_data.ble_coordinator.connect()
-    except Exception as err:
-        raise ConfigEntryNotReady(f"Failed to connect to Taco device {address}: {err}") from err
-
-    entry.runtime_data.update_coordinator = (
-        entry.runtime_data.ble_coordinator.update_coordinator
+    # Start our data coordinators, responsible for reading/writing bluetooth data.
+    #
+    # Store these and other important info in runtime_data so
+    # sensors and other entities can access it.
+    ble_coordinator = BleDataUpdateCoordinator(hass, ble_device, taco_gatt)
+    update_coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=DOMAIN,
+        update_method=ble_coordinator.poll,
+        setup_method=ble_coordinator.setup,
+        update_interval=ble_coordinator.update_interval,
+        always_update=False,
     )
-
-    # Forward setup to all platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.runtime_data = TacoRuntimeData(
+        address=address,
+        password=entry.data.get(CONF_TACO_DEVICE_PASSWORD),
+        update_coordinator=update_coordinator,
+        ble_coordinator=ble_coordinator,
+    )
 
     # Very important Taco setup.
     initial_data = await send_initial_write_requests(entry.runtime_data)
@@ -64,15 +78,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: TacoConfigEntry) -> bool
     if product is not None and product.family == "ZVC":
         entry.runtime_data.supports_force_zone = False
         _LOGGER.warning(
-            "Taco device is a %s (%s, family %s). Zone force-on switches are disabled because ZVC controls reject this command.",
-            product.model,
-            product.name,
+            "Taco %s is a %s (%s); zone override is not supported on this model, "
+            "running read-only",
+            address,
             product.family,
+            product.product,
         )
     else:
         entry.runtime_data.remove_listeners = await setup_write_loop(
             hass, entry.runtime_data
         )
+
+    # Need to get data now because some of the entry setup will use it.
+    await update_coordinator.async_config_entry_first_refresh()
+
+    # Subscribe entries.
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Trigger a force read for all the entrys that just subscribed.
+    await ble_coordinator.force_data_update()
 
     return True
 
